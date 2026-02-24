@@ -208,11 +208,14 @@ function App() {
   const [editValues, setEditValues] = useState({})
   const [editStatus, setEditStatus] = useState({ state: 'idle', message: '' })
   const [toast, setToast] = useState(null)
+  const [authChecked, setAuthChecked] = useState(false)
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [loginValues, setLoginValues] = useState({ username: '', password: '' })
 
   const fetchData = async () => {
     setStatus({ state: 'loading', message: 'Connecting to Google Sheets...' })
     try {
-      const response = await fetch('/api/dives')
+      const response = await fetch('/api/dives', { credentials: 'include' })
       if (!response.ok) {
         throw new Error(`API error: ${response.status}`)
       }
@@ -226,7 +229,23 @@ function App() {
   }
 
   useEffect(() => {
-    fetchData()
+    const checkSession = async () => {
+      try {
+        const response = await fetch('/api/session', { credentials: 'include' })
+        const data = await response.json()
+        const authed = Boolean(data.authenticated)
+        setIsAuthenticated(authed)
+        if (authed) {
+          await fetchData()
+        }
+      } catch (error) {
+        setIsAuthenticated(false)
+      } finally {
+        setAuthChecked(true)
+      }
+    }
+
+    checkSession()
   }, [])
 
   useEffect(() => {
@@ -472,6 +491,7 @@ function App() {
       const response = await fetch('/api/dives', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify(formValues),
       })
       if (!response.ok) {
@@ -572,6 +592,7 @@ function App() {
       const response = await fetch(`/api/dives/${editRow._rowNumber}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify(editValues),
       })
       if (!response.ok) {
@@ -593,13 +614,80 @@ function App() {
           {toast.message}
         </div>
       )}
-      <header className="app-header">
+      {!authChecked ? (
+        <div className="login">
+          <div className="login-card">
+            <h2>Welcome back</h2>
+            <p className="muted">Sign in to access your dive log.</p>
+          </div>
+        </div>
+      ) : !isAuthenticated ? (
+        <div className="login">
+          <form
+            className="login-card"
+            onSubmit={async (event) => {
+              event.preventDefault()
+              setToast(null)
+              try {
+                const response = await fetch('/api/login', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  credentials: 'include',
+                  body: JSON.stringify(loginValues),
+                })
+                if (!response.ok) throw new Error('Invalid credentials.')
+                setIsAuthenticated(true)
+                await fetchData()
+              } catch (error) {
+                setToast({ type: 'error', message: error.message })
+              }
+            }}
+          >
+            <h2>Login</h2>
+            <p className="muted">Enter your credentials to continue.</p>
+            <label className="form-field">
+              <span>Username</span>
+              <input
+                type="text"
+                value={loginValues.username}
+                onChange={(event) => setLoginValues((prev) => ({ ...prev, username: event.target.value }))}
+              />
+            </label>
+            <label className="form-field">
+              <span>Password</span>
+              <input
+                type="password"
+                value={loginValues.password}
+                onChange={(event) => setLoginValues((prev) => ({ ...prev, password: event.target.value }))}
+              />
+            </label>
+            <button type="submit" className="primary">
+              Sign in
+            </button>
+          </form>
+        </div>
+      ) : (
+        <>
+          <header className="app-header">
         <div>
           <p className="eyebrow">Dive Log</p>
           <h1>Patrick's Dive Log</h1>
         </div>
-        <div className={`status status-${status.state}`}>
-          {status.message || 'Idle'}
+        <div className="header-actions">
+          <div className={`status status-${status.state}`}>
+            {status.message || 'Idle'}
+          </div>
+          <button
+            type="button"
+            className="secondary"
+            onClick={async () => {
+              await fetch('/api/logout', { method: 'POST', credentials: 'include' })
+              setIsAuthenticated(false)
+              setToast({ type: 'success', message: 'Logged out successfully.' })
+            }}
+          >
+            Logout
+          </button>
         </div>
       </header>
 
@@ -974,6 +1062,8 @@ function App() {
           </section>
         )}
       </main>
+        </>
+      )}
     </div>
   )
 }
