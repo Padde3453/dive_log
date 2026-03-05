@@ -409,15 +409,6 @@ function App() {
     mapRowsForPins.forEach((row) => {
       let lat = parseCoord(getField(row, ['Latitude', 'Lat']))
       let lng = parseCoord(getField(row, ['Longitude', 'Long', 'Lng']))
-      if (Number.isFinite(lat) && Number.isFinite(lng)) {
-        const latValid = lat <= 90 && lat >= -90
-        const lngValid = lng <= 180 && lng >= -180
-        if (!latValid && (lng <= 90 && lng >= -90) && (lat <= 180 && lat >= -180)) {
-          const swap = lat
-          lat = lng
-          lng = swap
-        }
-      }
       if (
         Number.isFinite(lat) &&
         Number.isFinite(lng) &&
@@ -833,10 +824,16 @@ function App() {
                   zoom={2}
                   scrollWheelZoom={false}
                   className="map-leaflet"
+                  maxBounds={[
+                    [-85, -180],
+                    [85, 180],
+                  ]}
+                  maxBoundsViscosity={0.7}
                 >
                   <TileLayer
                     attribution="&copy; OpenStreetMap contributors, &copy; CARTO"
                     url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                    noWrap
                   />
                   <FitBounds points={mapLayer === 'markers' || mapLayer === 'both' ? mapPoints : []} />
                   {(mapLayer === 'choropleth' || mapLayer === 'both') && worldData && (
