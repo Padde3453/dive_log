@@ -362,7 +362,8 @@ h1 {
 }
 
 .form-field input,
-.form-field textarea {
+.form-field textarea,
+.form-field select {
   border: none;
   border-radius: 10px;
   padding: 10px 12px;

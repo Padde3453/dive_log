@@ -93,11 +93,27 @@ const parseDateValue = (value) => {
 
 const parseCoord = (value) => {
   if (value === null || value === undefined) return null
-  const text = String(value).trim()
+  let text = String(value).trim()
   if (!text) return null
-  const normalized = text.includes('.') ? text : text.replace(',', '.')
-  const num = Number(normalized.replace(/[^0-9.\-]/g, ''))
-  return Number.isFinite(num) ? num : null
+  const hasSouth = /[sS]/.test(text)
+  const hasWest = /[wW]/.test(text)
+  text = text.replace(/[NSEWnsew]/g, '').trim()
+  text = text.replace(/\s+/g, '')
+  if (text.includes(',') && text.includes('.')) {
+    text = text.replace(/,/g, '')
+  } else if (text.includes(',')) {
+    const parts = text.split(',')
+    if (parts.length > 2) {
+      const last = parts.pop()
+      text = `${parts.join('')}.${last}`
+    } else {
+      text = text.replace(',', '.')
+    }
+  }
+  const num = Number(text.replace(/[^0-9.\-]/g, ''))
+  if (!Number.isFinite(num)) return null
+  if ((hasSouth || hasWest) && num > 0) return -num
+  return num
 }
 
 const toDateInputValue = (date) => {
@@ -280,6 +296,9 @@ function App() {
     const maxDepths = validRows.map((row) => toNumber(getField(row, ['Max Depth', 'Max depth', 'MaxDepth'])))
 
     const minutesDived = diveTimes.reduce((sum, value) => sum + value, 0)
+    const hoursDived = minutesDived
+      ? Math.floor(minutesDived / 60) + (minutesDived % 60) / 100
+      : 0
     const deepestDive = maxDepths.length ? Math.max(...maxDepths) : 0
     const longestDive = diveTimes.length ? Math.max(...diveTimes) : 0
     const avgMaxDepth = maxDepths.length ? Math.round(maxDepths.reduce((sum, value) => sum + value, 0) / maxDepths.length) : 0
@@ -287,7 +306,7 @@ function App() {
 
     return {
       totalDives,
-      minutesDived,
+      hoursDived,
       deepestDive,
       longestDive,
       avgMaxDepth,
@@ -356,6 +375,15 @@ function App() {
     })
   }, [selectedYear, validRows])
 
+  const mapRowsForPins = useMemo(() => {
+    const base = selectedYear ? rows : rows
+    if (!selectedYear) return base
+    return base.filter((row) => {
+      const date = parseDateValue(getField(row, ['Date']))
+      return date && date.getFullYear() <= selectedYear
+    })
+  }, [rows, selectedYear])
+
   const locations = useMemo(() => {
     const counts = buildCounts(mapRows, ['Country'])
     return counts.sort((a, b) => b.value - a.value).slice(0, 6)
@@ -378,9 +406,18 @@ function App() {
 
   const mapPoints = useMemo(() => {
     const points = []
-    mapRows.forEach((row) => {
-      const lat = parseCoord(getField(row, ['Latitude', 'Lat']))
-      const lng = parseCoord(getField(row, ['Longitude', 'Long', 'Lng']))
+    mapRowsForPins.forEach((row) => {
+      let lat = parseCoord(getField(row, ['Latitude', 'Lat']))
+      let lng = parseCoord(getField(row, ['Longitude', 'Long', 'Lng']))
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        const latValid = lat <= 90 && lat >= -90
+        const lngValid = lng <= 180 && lng >= -180
+        if (!latValid && (lng <= 90 && lng >= -90) && (lat <= 180 && lat >= -180)) {
+          const swap = lat
+          lat = lng
+          lng = swap
+        }
+      }
       if (
         Number.isFinite(lat) &&
         Number.isFinite(lng) &&
@@ -399,7 +436,7 @@ function App() {
       }
     })
     return points
-  }, [mapRows])
+  }, [mapRowsForPins])
 
   const markerIcon = useMemo(
     () =>
@@ -441,6 +478,32 @@ function App() {
     }
   }, [validRows])
 
+  const entryOptions = useMemo(() => {
+    const values = new Set()
+    validRows.forEach((row) => {
+      const entry = getField(row, ['Entry'])
+      if (entry) values.add(String(entry).trim())
+    })
+    const list = Array.from(values).sort((a, b) => a.localeCompare(b))
+    return list.length ? list : ['Boat', 'Shore']
+  }, [validRows])
+
+  const diveTypeOptions = useMemo(() => {
+    const list = [
+      'Training Dive',
+      'Fun Dive',
+      'Night dive',
+      'Morning Dive',
+      'Tunnels Dive',
+      'Cave Dive',
+      'Shipwreck Dive',
+      'Drift Dive',
+      'Certification Dive',
+      'Deep Dive (+30m)',
+    ]
+    return list.sort((a, b) => a.localeCompare(b))
+  }, [])
+
   const nextDiveNumber = useMemo(() => {
     const maxDive = validRows.reduce((max, row) => {
       const current = toNumber(getField(row, ['Dive #', 'Dive#', 'Dive Number']))
@@ -469,15 +532,15 @@ function App() {
       { name: 'Weight', label: 'Weight (kg)', type: 'number', step: 'any' },
       { name: 'Wetsuit (mm)', label: 'Wetsuit (mm)', type: 'text' },
       { name: 'Oxygen', label: 'Oxygen', type: 'text' },
-      { name: 'Entry', label: 'Entry', type: 'text' },
-      { name: 'Dive type', label: 'Dive type', type: 'text' },
+      { name: 'Entry', label: 'Entry', type: 'select', options: entryOptions },
+      { name: 'Dive type', label: 'Dive type', type: 'select', options: diveTypeOptions },
       { name: 'Special sighting', label: 'Special sighting', type: 'text' },
       { name: 'Notes', label: 'Notes', type: 'textarea' },
       { name: 'Buddy Name', label: 'Buddy Name', type: 'text' },
       { name: 'Picture signature', label: 'Picture signature', type: 'text' },
       { name: 'Link to pictures', label: 'Link to pictures', type: 'text' },
     ],
-    [],
+    [diveTypeOptions, entryOptions],
   )
 
   useEffect(() => {
@@ -730,8 +793,8 @@ function App() {
                 <h2>{metrics.totalDives}</h2>
               </div>
               <div className="metric">
-                <p>Minutes dived</p>
-                <h2>{metrics.minutesDived}</h2>
+                <p>Hours dived</p>
+                <h2>{metrics.hoursDived.toFixed(1)}</h2>
               </div>
               <div className="metric">
                 <p>Deepest dive (m)</p>
@@ -928,6 +991,18 @@ function App() {
                         value={formValues[field.name] ?? ''}
                         onChange={(event) => handleFieldChange(field.name, event.target.value)}
                       />
+                    ) : field.type === 'select' ? (
+                      <select
+                        value={formValues[field.name] ?? ''}
+                        onChange={(event) => handleFieldChange(field.name, event.target.value)}
+                      >
+                        <option value="">Select...</option>
+                        {field.options?.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
                     ) : (
                       <input
                         type={field.type}
@@ -1042,6 +1117,18 @@ function App() {
                             value={editValues[field.name] ?? ''}
                             onChange={(event) => handleEditChange(field.name, event.target.value)}
                           />
+                        ) : field.type === 'select' ? (
+                          <select
+                            value={editValues[field.name] ?? ''}
+                            onChange={(event) => handleEditChange(field.name, event.target.value)}
+                          >
+                            <option value="">Select...</option>
+                            {field.options?.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>
                         ) : (
                           <input
                             type={field.type}
