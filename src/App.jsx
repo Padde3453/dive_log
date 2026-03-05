@@ -91,6 +91,15 @@ const parseDateValue = (value) => {
   return Number.isNaN(date.getTime()) ? null : date
 }
 
+const parseCoord = (value) => {
+  if (value === null || value === undefined) return null
+  const text = String(value).trim()
+  if (!text) return null
+  const normalized = text.includes('.') ? text : text.replace(',', '.')
+  const num = Number(normalized.replace(/[^0-9.\-]/g, ''))
+  return Number.isFinite(num) ? num : null
+}
+
 const toDateInputValue = (date) => {
   if (!date) return ''
   const year = date.getFullYear()
@@ -370,9 +379,17 @@ function App() {
   const mapPoints = useMemo(() => {
     const points = []
     mapRows.forEach((row) => {
-      const lat = toNumber(getField(row, ['Latitude', 'Lat']))
-      const lng = toNumber(getField(row, ['Longitude', 'Long', 'Lng']))
-      if (Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0)) {
+      const lat = parseCoord(getField(row, ['Latitude', 'Lat']))
+      const lng = parseCoord(getField(row, ['Longitude', 'Long', 'Lng']))
+      if (
+        Number.isFinite(lat) &&
+        Number.isFinite(lng) &&
+        lat <= 90 &&
+        lat >= -90 &&
+        lng <= 180 &&
+        lng >= -180 &&
+        !(lat === 0 && lng === 0)
+      ) {
         points.push({
           lat,
           lng,

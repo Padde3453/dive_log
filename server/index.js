@@ -4,12 +4,14 @@ import cors from "cors";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import { appendRow, getSheetValues, updateRow } from "./googleSheets.js";
 
 const app = express();
 const port = process.env.PORT || 5174;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distPath = path.resolve(__dirname, "../dist");
+const hasDist = fs.existsSync(path.join(distPath, "index.html"));
 
 app.use(cors());
 app.use(express.json());
@@ -17,7 +19,7 @@ app.use(express.json());
 const authUser = process.env.APP_BASIC_AUTH_USER;
 const authPass = process.env.APP_BASIC_AUTH_PASS;
 const sessionSecret = process.env.APP_SESSION_SECRET || "dive-log-session";
-const sessions = new Map();
+const sessionMaxAgeMs = 1000 * 60 * 60 * 24 * 14;
 
 const parseCookies = (cookieHeader = "") =>
   cookieHeader
@@ -30,10 +32,31 @@ const parseCookies = (cookieHeader = "") =>
       return acc;
     }, {});
 
+const signToken = (payload) => {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = crypto.createHmac("sha256", sessionSecret).update(body).digest("base64url");
+  return `${body}.${sig}`;
+};
+
+const verifyToken = (token) => {
+  const [body, sig] = String(token || "").split(".");
+  if (!body || !sig) return null;
+  const expected = crypto.createHmac("sha256", sessionSecret).update(body).digest("base64url");
+  if (expected !== sig) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    if (!payload?.iat) return null;
+    if (Date.now() - payload.iat > sessionMaxAgeMs) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+};
+
 const isAuthenticated = (req) => {
   const cookies = parseCookies(req.headers.cookie || "");
   const token = cookies["dive_log_session"];
-  return token && sessions.has(token);
+  return Boolean(verifyToken(token));
 };
 
 const requireAuth = (req, res, next) => {
@@ -60,12 +83,7 @@ app.post("/api/login", (req, res) => {
     return res.status(401).json({ error: "Invalid credentials." });
   }
 
-  const token = crypto
-    .createHmac("sha256", sessionSecret)
-    .update(`${authUser}:${Date.now()}:${crypto.randomBytes(16).toString("hex")}`)
-    .digest("hex");
-
-  sessions.set(token, { user: authUser, created: Date.now() });
+  const token = signToken({ user: authUser, iat: Date.now() });
 
   const secure = process.env.NODE_ENV === "production";
   res.setHeader(
@@ -78,9 +96,6 @@ app.post("/api/login", (req, res) => {
 });
 
 app.post("/api/logout", (req, res) => {
-  const cookies = parseCookies(req.headers.cookie || "");
-  const token = cookies["dive_log_session"];
-  if (token) sessions.delete(token);
   res.setHeader(
     "Set-Cookie",
     "dive_log_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0"
@@ -131,10 +146,12 @@ app.put("/api/dives/:rowNumber", async (req, res) => {
   }
 });
 
-app.use(express.static(distPath));
-app.get(/^(?!\/api).*/, (req, res) => {
-  res.sendFile(path.join(distPath, "index.html"));
-});
+if (hasDist) {
+  app.use(express.static(distPath));
+  app.get(/^(?!\/api).*/, (req, res) => {
+    res.sendFile(path.join(distPath, "index.html"));
+  });
+}
 
 app.listen(port, () => {
   // eslint-disable-next-line no-console
