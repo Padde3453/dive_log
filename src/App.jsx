@@ -409,6 +409,20 @@ function App() {
     mapRowsForPins.forEach((row) => {
       let lat = parseCoord(getField(row, ['Latitude', 'Lat']))
       let lng = parseCoord(getField(row, ['Longitude', 'Long', 'Lng']))
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        const latValid = lat <= 90 && lat >= -90
+        const lngValid = lng <= 180 && lng >= -180
+        if (!latValid && lng <= 90 && lng >= -90 && (lat <= 180 && lat >= -180)) {
+          const swap = lat
+          lat = lng
+          lng = swap
+        }
+        if (!lngValid && lat <= 180 && lat >= -180 && (lng <= 90 && lng >= -90)) {
+          const swap = lat
+          lat = lng
+          lng = swap
+        }
+      }
       if (
         Number.isFinite(lat) &&
         Number.isFinite(lng) &&
