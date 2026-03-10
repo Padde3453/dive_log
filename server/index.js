@@ -1,17 +1,48 @@
-import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 import fs from "node:fs";
-import { appendRow, getSheetValues, updateRow } from "./googleSheets.js";
+import dotenv from "dotenv";
+import {
+  appendRow,
+  appendRowToSheet,
+  getSheetValues,
+  getSheetValuesForSheet,
+  updateRow,
+} from "./googleSheets.js";
 
 const app = express();
-const port = process.env.PORT || 5174;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const envPath = path.resolve(__dirname, "../.env");
+const envResult = dotenv.config({ path: envPath });
+if (envResult.error) {
+  // eslint-disable-next-line no-console
+  console.warn("Failed to load .env from", envPath, envResult.error);
+}
+const port = process.env.PORT || 5174;
+const requiredEnv = [
+  "GOOGLE_SHEETS_SPREADSHEET_ID",
+];
+const missingEnv = requiredEnv.filter((key) => !process.env[key]);
+if (missingEnv.length) {
+  // eslint-disable-next-line no-console
+  console.warn("Missing env vars:", missingEnv.join(", "));
+}
+if (
+  !process.env.GOOGLE_SHEETS_KEYFILE &&
+  (!process.env.GOOGLE_SHEETS_CLIENT_EMAIL || !process.env.GOOGLE_SHEETS_PRIVATE_KEY)
+) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "Missing Google auth config: set GOOGLE_SHEETS_KEYFILE or GOOGLE_SHEETS_CLIENT_EMAIL + GOOGLE_SHEETS_PRIVATE_KEY."
+  );
+}
 const distPath = path.resolve(__dirname, "../dist");
 const hasDist = fs.existsSync(path.join(distPath, "index.html"));
+const certificationsSheetName =
+  process.env.GOOGLE_SHEETS_CERTIFICATIONS_SHEET_NAME || "Certifications";
 
 app.use(cors());
 app.use(express.json());
@@ -143,6 +174,34 @@ app.put("/api/dives/:rowNumber", async (req, res) => {
     // eslint-disable-next-line no-console
     console.error("PUT /api/dives failed:", error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/certifications", async (req, res) => {
+  try {
+    if (authUser && authPass && !isAuthenticated(req)) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const data = await getSheetValuesForSheet(certificationsSheetName);
+    return res.json(data);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("GET /api/certifications failed:", error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/certifications", async (req, res) => {
+  try {
+    if (authUser && authPass && !isAuthenticated(req)) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    await appendRowToSheet(certificationsSheetName, req.body || {});
+    return res.json({ ok: true });
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("POST /api/certifications failed:", error);
+    return res.status(500).json({ error: error.message });
   }
 });
 

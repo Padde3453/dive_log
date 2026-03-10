@@ -7,7 +7,15 @@ import 'leaflet.markercluster/dist/MarkerCluster.css'
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css'
 import './App.css'
 
-const tabs = ['Dashboard', 'Enter Dive', 'Edit Dive']
+const tabs = ['Dashboard', 'Log Dive', 'View Dives', 'Certifications']
+const certificationColumns = [
+  'Certification',
+  'Date',
+  'Country',
+  'Dive Center',
+  'Instructor Name',
+  'Instructor Number',
+]
 
 const palette = {
   ocean: ['#0ea5e9', '#38bdf8', '#22d3ee', '#38bdf8', '#0ea5e9'],
@@ -79,16 +87,39 @@ const parseDateValue = (value) => {
   if (!value) return null
   const text = String(value).trim()
   if (!text) return null
+
+  const isoMatch = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/)
+  if (isoMatch) {
+    const year = Number(isoMatch[1])
+    const month = Number(isoMatch[2])
+    const day = Number(isoMatch[3])
+    const date = new Date(year, month - 1, day)
+    return Number.isNaN(date.getTime()) ? null : date
+  }
+
+  const slashMatch = text.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/)
+  if (slashMatch) {
+    let first = Number(slashMatch[1])
+    let second = Number(slashMatch[2])
+    let year = Number(slashMatch[3])
+    if (year < 100) year += 2000
+
+    let day = first
+    let month = second
+
+    // Support old mm/dd rows when day/month order is unambiguous.
+    if (first <= 12 && second > 12) {
+      month = first
+      day = second
+    }
+
+    const date = new Date(year, month - 1, day)
+    return Number.isNaN(date.getTime()) ? null : date
+  }
+
   const parsed = Date.parse(text)
   if (!Number.isNaN(parsed)) return new Date(parsed)
-
-  const parts = text.split(/[\/\-.]/).map((part) => Number(part))
-  if (parts.length < 3) return null
-  let [month, day, year] = parts
-  if (!Number.isFinite(month) || !Number.isFinite(day) || !Number.isFinite(year)) return null
-  if (year < 100) year += 2000
-  const date = new Date(year, month - 1, day)
-  return Number.isNaN(date.getTime()) ? null : date
+  return null
 }
 
 const parseCoord = (value) => {
@@ -97,31 +128,46 @@ const parseCoord = (value) => {
   if (!text) return null
   const hasSouth = /[sS]/.test(text)
   const hasWest = /[wW]/.test(text)
-  text = text.replace(/[NSEWnsew]/g, '').trim()
-  text = text.replace(/\s+/g, '')
-  if (text.includes(',') && text.includes('.')) {
-    text = text.replace(/,/g, '')
-  } else if (text.includes(',')) {
-    const parts = text.split(',')
-    if (parts.length > 2) {
-      const last = parts.pop()
-      text = `${parts.join('')}.${last}`
-    } else {
-      text = text.replace(',', '.')
-    }
+  text = text.replace(/[NSEWnsew]/g, '')
+  text = text.replace(/[^\d.,\s\-+]/g, '').trim()
+  if (!text) return null
+
+  const sign = text.includes('-') ? -1 : 1
+  const cleaned = text.replace(/[+-]/g, '')
+  const lastSep = Math.max(
+    cleaned.lastIndexOf('.'),
+    cleaned.lastIndexOf(','),
+    cleaned.lastIndexOf(' '),
+  )
+
+  let numberText = ''
+  if (lastSep >= 0) {
+    const left = cleaned.slice(0, lastSep).replace(/\D/g, '')
+    const right = cleaned.slice(lastSep + 1).replace(/\D/g, '')
+    numberText = right ? `${left}.${right}` : left
+  } else {
+    numberText = cleaned.replace(/\D/g, '')
   }
-  const num = Number(text.replace(/[^0-9.\-]/g, ''))
+
+  if (!numberText) return null
+  const num = Number(numberText) * sign
   if (!Number.isFinite(num)) return null
   if ((hasSouth || hasWest) && num > 0) return -num
   return num
 }
 
-const toDateInputValue = (date) => {
+const formatDateDDMMYYYY = (date) => {
   if (!date) return ''
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
+  return `${day}/${month}/${year}`
+}
+
+const formatDateDisplay = (value) => {
+  const date = value instanceof Date ? value : parseDateValue(value)
+  if (!date) return String(value ?? '')
+  return formatDateDDMMYYYY(date)
 }
 
 const computeDiveTime = (timeIn, timeOut) => {
@@ -227,6 +273,7 @@ function App() {
   const [filterCountry, setFilterCountry] = useState('')
   const [filterStart, setFilterStart] = useState('')
   const [filterEnd, setFilterEnd] = useState('')
+  const [filterText, setFilterText] = useState('')
   const [sortKey, setSortKey] = useState('')
   const [sortDir, setSortDir] = useState('asc')
   const [editRow, setEditRow] = useState(null)
@@ -236,6 +283,12 @@ function App() {
   const [authChecked, setAuthChecked] = useState(false)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [loginValues, setLoginValues] = useState({ username: '', password: '' })
+  const [certifications, setCertifications] = useState([])
+  const [certStatus, setCertStatus] = useState({ state: 'idle', message: '' })
+  const [showCertForm, setShowCertForm] = useState(false)
+  const [certForm, setCertForm] = useState(() =>
+    certificationColumns.reduce((acc, key) => ({ ...acc, [key]: '' }), {}),
+  )
 
   const fetchData = async () => {
     setStatus({ state: 'loading', message: 'Connecting to Google Sheets...' })
@@ -253,6 +306,20 @@ function App() {
     }
   }
 
+  const fetchCertifications = async () => {
+    try {
+      const response = await fetch('/api/certifications', { credentials: 'include' })
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`)
+      }
+      const data = await response.json()
+      setCertifications(data.rows || [])
+      setCertStatus({ state: 'success', message: '' })
+    } catch (error) {
+      setCertStatus({ state: 'error', message: error.message })
+    }
+  }
+
   useEffect(() => {
     const checkSession = async () => {
       try {
@@ -262,6 +329,7 @@ function App() {
         setIsAuthenticated(authed)
         if (authed) {
           await fetchData()
+          await fetchCertifications()
         }
       } catch (error) {
         setIsAuthenticated(false)
@@ -342,11 +410,11 @@ function App() {
         .filter(Boolean)
       if (dates.length) {
         const earliest = new Date(Math.min(...dates.map((date) => date.getTime())))
-        setFilterStart(toDateInputValue(earliest))
+        setFilterStart(formatDateDDMMYYYY(earliest))
       }
     }
     if (!filterEnd) {
-      setFilterEnd(toDateInputValue(new Date()))
+      setFilterEnd(formatDateDDMMYYYY(new Date()))
     }
   }, [filterEnd, filterStart, validRows])
 
@@ -380,7 +448,8 @@ function App() {
     if (!selectedYear) return base
     return base.filter((row) => {
       const date = parseDateValue(getField(row, ['Date']))
-      return date && date.getFullYear() <= selectedYear
+      if (!date) return true
+      return date.getFullYear() <= selectedYear
     })
   }, [rows, selectedYear])
 
@@ -520,7 +589,7 @@ function App() {
   const formFields = useMemo(
     () => [
       { name: 'Dive #', label: 'Dive #', type: 'number', readOnly: true },
-      { name: 'Date', label: 'Date', type: 'date' },
+      { name: 'Date', label: 'Date', type: 'text', placeholder: 'DD/MM/YYYY' },
       { name: 'Country', label: 'Country', type: 'text' },
       { name: 'Area', label: 'Area', type: 'text' },
       { name: 'Reef - Dive Site', label: 'Reef / Dive Site', type: 'text' },
@@ -608,8 +677,9 @@ function App() {
   }, [validRows])
 
   const filteredRows = useMemo(() => {
-    const startDate = filterStart ? new Date(filterStart) : null
-    const endDate = filterEnd ? new Date(filterEnd) : null
+    const startDate = filterStart ? parseDateValue(filterStart) : null
+    const endDate = filterEnd ? parseDateValue(filterEnd) : null
+    const query = normalizeName(filterText)
     return validRows.filter((row) => {
       const country = String(getField(row, ['Country']) || '').trim()
       if (filterCountry && normalizeName(country) !== normalizeName(filterCountry)) return false
@@ -619,9 +689,15 @@ function App() {
         if (startDate && date < startDate) return false
         if (endDate && date > endDate) return false
       }
+      if (query) {
+        const matches = headers.some((header) =>
+          normalizeName(String(row[header] ?? '')).includes(query),
+        )
+        if (!matches) return false
+      }
       return true
     })
-  }, [filterCountry, filterEnd, filterStart, validRows])
+  }, [filterCountry, filterEnd, filterStart, filterText, headers, validRows])
 
   const displayHeaders = useMemo(
     () => headers.filter((header) => normalizeName(header) !== normalizeName('Count Area')),
@@ -648,6 +724,21 @@ function App() {
     })
     return sortDir === 'asc' ? sorted : sorted.reverse()
   }, [filteredRows, sortDir, sortKey])
+
+  const sortedCertifications = useMemo(() => {
+    const rowsToSort = [...certifications]
+    rowsToSort.sort((a, b) => {
+      const aDate = parseDateValue(getField(a, ['Date']))
+      const bDate = parseDateValue(getField(b, ['Date']))
+      if (aDate && bDate) {
+        return bDate - aDate
+      }
+      if (aDate) return -1
+      if (bDate) return 1
+      return String(getField(b, ['Date']) || '').localeCompare(String(getField(a, ['Date']) || ''))
+    })
+    return rowsToSort
+  }, [certifications])
 
   const beginEdit = (row) => {
     const next = {}
@@ -692,6 +783,34 @@ function App() {
     }
   }
 
+  const handleCertificationSubmit = async (event) => {
+    event.preventDefault()
+    setCertStatus({ state: 'loading', message: 'Saving certification...' })
+    try {
+      const payload = { ...certForm }
+      if (!payload['Dive Center'] && payload['Dice Center']) {
+        payload['Dive Center'] = payload['Dice Center']
+      }
+      const response = await fetch('/api/certifications', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(payload),
+      })
+      if (!response.ok) {
+        throw new Error(`Save failed: ${response.status}`)
+      }
+      setCertStatus({ state: 'success', message: 'Certification saved.' })
+      setToast({ type: 'success', message: 'Certification added successfully.' })
+      setCertForm(certificationColumns.reduce((acc, key) => ({ ...acc, [key]: '' }), {}))
+      setShowCertForm(false)
+      await fetchCertifications()
+    } catch (error) {
+      setCertStatus({ state: 'error', message: error.message })
+      setToast({ type: 'error', message: error.message })
+    }
+  }
+
   return (
     <div className="app">
       {toast && (
@@ -723,6 +842,7 @@ function App() {
                 if (!response.ok) throw new Error('Invalid credentials.')
                 setIsAuthenticated(true)
                 await fetchData()
+                await fetchCertifications()
               } catch (error) {
                 setToast({ type: 'error', message: error.message })
               }
@@ -846,7 +966,8 @@ function App() {
                 >
                   <TileLayer
                     attribution="&copy; OpenStreetMap contributors, &copy; CARTO"
-                    url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                    url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
+                    subdomains={['a', 'b', 'c', 'd']}
                     noWrap
                   />
                   <FitBounds points={mapLayer === 'markers' || mapLayer === 'both' ? mapPoints : []} />
@@ -963,7 +1084,7 @@ function App() {
             </div>
           </section>
         )}
-        {activeTab === 'Enter Dive' && (
+        {activeTab === 'Log Dive' && (
           <section className="entry">
             <div className="entry-header">
               <div>
@@ -1037,9 +1158,9 @@ function App() {
             </form>
           </section>
         )}
-        {activeTab === 'Edit Dive' && (
+        {activeTab === 'View Dives' && (
           <section className="edit">
-            <h2>Edit Dive</h2>
+            <h2>View Dives</h2>
             <div className="filters">
               <label>
                 <span>Location</span>
@@ -1054,11 +1175,42 @@ function App() {
               </label>
               <label>
                 <span>Start date</span>
-                <input type="date" value={filterStart} onChange={(event) => setFilterStart(event.target.value)} />
+                <input
+                  type="text"
+                  placeholder="DD/MM/YYYY"
+                  value={filterStart}
+                  onChange={(event) => setFilterStart(event.target.value)}
+                />
               </label>
               <label>
                 <span>End date</span>
-                <input type="date" value={filterEnd} onChange={(event) => setFilterEnd(event.target.value)} />
+                <input
+                  type="text"
+                  placeholder="DD/MM/YYYY"
+                  value={filterEnd}
+                  onChange={(event) => setFilterEnd(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>Search all columns</span>
+                <div className="filter-search">
+                  <input
+                    type="text"
+                    placeholder="Type to filter table..."
+                    value={filterText}
+                    onChange={(event) => setFilterText(event.target.value)}
+                  />
+                  {filterText && (
+                    <button
+                      type="button"
+                      className="filter-clear"
+                      aria-label="Clear text filter"
+                      onClick={() => setFilterText('')}
+                    >
+                      x
+                    </button>
+                  )}
+                </div>
               </label>
             </div>
             <div className="table-wrap">
@@ -1091,7 +1243,9 @@ function App() {
                   {sortedRows.map((row) => (
                     <tr key={row._rowNumber}>
                       {displayHeaders.map((header) => (
-                        <td key={`${row._rowNumber}-${header}`}>{row[header] ?? ''}</td>
+                        <td key={`${row._rowNumber}-${header}`}>
+                          {normalizeName(header) === 'date' ? formatDateDisplay(row[header]) : row[header] ?? ''}
+                        </td>
                       ))}
                       <td>
                         <button type="button" className="table-action" onClick={() => beginEdit(row)}>
@@ -1173,6 +1327,78 @@ function App() {
                   </div>
                 </form>
               </section>
+            )}
+          </section>
+        )}
+        {activeTab === 'Certifications' && (
+          <section className="certifications">
+            <div className="entry-header">
+              <div>
+                <h2>Certifications</h2>
+                <p className="muted">All certifications sorted by newest date first.</p>
+              </div>
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => setShowCertForm((prev) => !prev)}
+                >
+                  {showCertForm ? 'Close' : 'Add Certification'}
+                </button>
+              </div>
+            </div>
+
+            {certStatus.state === 'error' && (
+              <div className="status status-error">{certStatus.message}</div>
+            )}
+
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    {certificationColumns.map((header) => (
+                      <th key={header}>{header}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedCertifications.map((row) => (
+                    <tr key={row._rowNumber}>
+                      <td>{getField(row, ['Certification'])}</td>
+                      <td>{formatDateDisplay(getField(row, ['Date']))}</td>
+                      <td>{getField(row, ['Country'])}</td>
+                      <td>{getField(row, ['Dive Center', 'Dice Center'])}</td>
+                      <td>{getField(row, ['Instructor Name'])}</td>
+                      <td>{getField(row, ['Instructor Number'])}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {showCertForm && (
+              <form className="entry-form cert-form" onSubmit={handleCertificationSubmit}>
+                <div className="form-grid">
+                  {certificationColumns.map((field) => (
+                    <label className="form-field" key={field}>
+                      <span>{field}</span>
+                      <input
+                        type="text"
+                        placeholder={field === 'Date' ? 'DD/MM/YYYY' : undefined}
+                        value={certForm[field] ?? ''}
+                        onChange={(event) =>
+                          setCertForm((prev) => ({ ...prev, [field]: event.target.value }))
+                        }
+                      />
+                    </label>
+                  ))}
+                </div>
+                <div className="form-actions">
+                  <button type="submit" className="primary">
+                    Save Certification
+                  </button>
+                </div>
+              </form>
             )}
           </section>
         )}
