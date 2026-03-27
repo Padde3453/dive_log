@@ -51,6 +51,7 @@ const authUser = process.env.APP_BASIC_AUTH_USER;
 const authPass = process.env.APP_BASIC_AUTH_PASS;
 const sessionSecret = process.env.APP_SESSION_SECRET || "dive-log-session";
 const sessionMaxAgeMs = 1000 * 60 * 60 * 24 * 14;
+const viewToken = process.env.APP_VIEW_TOKEN || "";
 
 const parseCookies = (cookieHeader = "") =>
   cookieHeader
@@ -90,6 +91,14 @@ const isAuthenticated = (req) => {
   return Boolean(verifyToken(token));
 };
 
+const hasValidViewToken = (req) => {
+  if (!viewToken) return false;
+  const incoming = String(req.query?.viewToken || "").trim();
+  return Boolean(incoming) && incoming === viewToken;
+};
+
+const canRead = (req) => isAuthenticated(req) || hasValidViewToken(req);
+
 const requireAuth = (req, res, next) => {
   if (!authUser || !authPass) return next();
   if (isAuthenticated(req)) return next();
@@ -101,7 +110,18 @@ app.get("/api/health", (req, res) => {
 });
 
 app.get("/api/session", (req, res) => {
-  res.json({ authenticated: isAuthenticated(req) });
+  const authenticated = isAuthenticated(req);
+  res.json({ authenticated, viewOnly: !authenticated && hasValidViewToken(req) });
+});
+
+app.get("/api/view-link", (req, res) => {
+  if (!viewToken) {
+    return res.json({ url: "" });
+  }
+  const proto = req.headers["x-forwarded-proto"] || req.protocol || "http";
+  const host = req.headers["x-forwarded-host"] || req.get("host");
+  const url = `${proto}://${host}/?viewToken=${encodeURIComponent(viewToken)}`;
+  return res.json({ url });
 });
 
 app.post("/api/login", (req, res) => {
@@ -136,7 +156,7 @@ app.post("/api/logout", (req, res) => {
 
 app.get("/api/dives", async (req, res) => {
   try {
-    if (authUser && authPass && !isAuthenticated(req)) {
+    if ((authUser && authPass) && !canRead(req)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
     const data = await getSheetValues();
@@ -179,7 +199,7 @@ app.put("/api/dives/:rowNumber", async (req, res) => {
 
 app.get("/api/certifications", async (req, res) => {
   try {
-    if (authUser && authPass && !isAuthenticated(req)) {
+    if ((authUser && authPass) && !canRead(req)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
     const data = await getSheetValuesForSheet(certificationsSheetName);

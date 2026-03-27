@@ -170,6 +170,15 @@ const formatDateDisplay = (value) => {
   return formatDateDDMMYYYY(date)
 }
 
+const toISODateInputValue = (value) => {
+  const date = value instanceof Date ? value : parseDateValue(value)
+  if (!date) return ''
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 const computeDiveTime = (timeIn, timeOut) => {
   const start = parseTimeToMinutes(timeIn)
   const end = parseTimeToMinutes(timeOut)
@@ -258,6 +267,10 @@ function FitBounds({ points }) {
 }
 
 function App() {
+  const initialViewToken =
+    typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('viewToken') || ''
+      : ''
   const [activeTab, setActiveTab] = useState('Dashboard')
   const [status, setStatus] = useState({ state: 'idle', message: '' })
   const [headers, setHeaders] = useState([])
@@ -282,7 +295,25 @@ function App() {
   const [toast, setToast] = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [isViewOnly, setIsViewOnly] = useState(false)
+  const [viewToken] = useState(initialViewToken)
   const [loginValues, setLoginValues] = useState({ username: '', password: '' })
+  const [viewOnlyUrlFromApi, setViewOnlyUrlFromApi] = useState('')
+  const viewOnlyToken = import.meta.env.VITE_VIEW_TOKEN || ''
+  const viewOnlyUrl = viewOnlyUrlFromApi || import.meta.env.VITE_VIEW_ONLY_URL
+    || (viewOnlyToken && typeof window !== 'undefined'
+      ? `${window.location.origin}/?viewToken=${encodeURIComponent(viewOnlyToken)}`
+      : '')
+
+  const withViewToken = (path) => {
+    if (!viewToken) return path
+    const separator = path.includes('?') ? '&' : '?'
+    return `${path}${separator}viewToken=${encodeURIComponent(viewToken)}`
+  }
+
+  const visibleTabs = isViewOnly && !isAuthenticated
+    ? tabs.filter((tab) => tab !== 'Log Dive')
+    : tabs
   const [certifications, setCertifications] = useState([])
   const [certStatus, setCertStatus] = useState({ state: 'idle', message: '' })
   const [showCertForm, setShowCertForm] = useState(false)
@@ -293,7 +324,7 @@ function App() {
   const fetchData = async () => {
     setStatus({ state: 'loading', message: 'Connecting to Google Sheets...' })
     try {
-      const response = await fetch('/api/dives', { credentials: 'include' })
+      const response = await fetch(withViewToken('/api/dives'), { credentials: 'include' })
       if (!response.ok) {
         throw new Error(`API error: ${response.status}`)
       }
@@ -308,7 +339,7 @@ function App() {
 
   const fetchCertifications = async () => {
     try {
-      const response = await fetch('/api/certifications', { credentials: 'include' })
+      const response = await fetch(withViewToken('/api/certifications'), { credentials: 'include' })
       if (!response.ok) {
         throw new Error(`API error: ${response.status}`)
       }
@@ -323,22 +354,41 @@ function App() {
   useEffect(() => {
     const checkSession = async () => {
       try {
-        const response = await fetch('/api/session', { credentials: 'include' })
+        const response = await fetch(withViewToken('/api/session'), { credentials: 'include' })
         const data = await response.json()
         const authed = Boolean(data.authenticated)
         setIsAuthenticated(authed)
+        setIsViewOnly(Boolean(data.viewOnly))
         if (authed) {
+          await fetchData()
+          await fetchCertifications()
+        } else if (data.viewOnly) {
           await fetchData()
           await fetchCertifications()
         }
       } catch (error) {
         setIsAuthenticated(false)
+        setIsViewOnly(false)
       } finally {
         setAuthChecked(true)
       }
     }
 
     checkSession()
+  }, [])
+
+  useEffect(() => {
+    const fetchViewLink = async () => {
+      try {
+        const response = await fetch('/api/view-link', { credentials: 'include' })
+        if (!response.ok) return
+        const data = await response.json()
+        if (data?.url) setViewOnlyUrlFromApi(data.url)
+      } catch {
+        // keep env fallback
+      }
+    }
+    fetchViewLink()
   }, [])
 
   useEffect(() => {
@@ -579,17 +629,17 @@ function App() {
   }, [])
 
   const nextDiveNumber = useMemo(() => {
-    const maxDive = validRows.reduce((max, row) => {
+    const maxDive = rows.reduce((max, row) => {
       const current = toNumber(getField(row, ['Dive #', 'Dive#', 'Dive Number']))
       return current > max ? current : max
     }, 0)
-    return maxDive + 1
-  }, [validRows])
+    return Math.floor(maxDive) + 1
+  }, [rows])
 
   const formFields = useMemo(
     () => [
       { name: 'Dive #', label: 'Dive #', type: 'number', readOnly: true },
-      { name: 'Date', label: 'Date', type: 'text', placeholder: 'DD/MM/YYYY' },
+      { name: 'Date', label: 'Date', type: 'date' },
       { name: 'Country', label: 'Country', type: 'text' },
       { name: 'Area', label: 'Area', type: 'text' },
       { name: 'Reef - Dive Site', label: 'Reef / Dive Site', type: 'text' },
@@ -811,6 +861,12 @@ function App() {
     }
   }
 
+  useEffect(() => {
+    if (!visibleTabs.includes(activeTab)) {
+      setActiveTab('Dashboard')
+    }
+  }, [activeTab, visibleTabs])
+
   return (
     <div className="app">
       {toast && (
@@ -825,7 +881,7 @@ function App() {
             <p className="muted">Sign in to access your dive log.</p>
           </div>
         </div>
-      ) : !isAuthenticated ? (
+      ) : !isAuthenticated && !isViewOnly ? (
         <div className="login">
           <form
             className="login-card"
@@ -869,6 +925,11 @@ function App() {
             <button type="submit" className="primary">
               Sign in
             </button>
+            {viewOnlyUrl && (
+              <a className="secondary view-only-link" href={viewOnlyUrl}>
+                View only
+              </a>
+            )}
           </form>
         </div>
       ) : (
@@ -882,22 +943,27 @@ function App() {
           <div className={`status status-${status.state}`}>
             {status.message || 'Idle'}
           </div>
-          <button
-            type="button"
-            className="secondary"
-            onClick={async () => {
-              await fetch('/api/logout', { method: 'POST', credentials: 'include' })
-              setIsAuthenticated(false)
-              setToast({ type: 'success', message: 'Logged out successfully.' })
-            }}
-          >
-            Logout
-          </button>
+          {isAuthenticated ? (
+            <button
+              type="button"
+              className="secondary"
+              onClick={async () => {
+                await fetch('/api/logout', { method: 'POST', credentials: 'include' })
+                setIsAuthenticated(false)
+                setIsViewOnly(false)
+                setToast({ type: 'success', message: 'Logged out successfully.' })
+              }}
+            >
+              Logout
+            </button>
+          ) : (
+            <span className="status status-loading">View only</span>
+          )}
         </div>
       </header>
 
       <nav className="tabs">
-        {tabs.map((tab) => (
+        {visibleTabs.map((tab) => (
           <button
             key={tab}
             type="button"
@@ -908,6 +974,12 @@ function App() {
           </button>
         ))}
       </nav>
+
+      {isViewOnly && !isAuthenticated && (
+        <div className="mode-banner" role="status" aria-live="polite">
+          View-only mode: logging and editing are disabled.
+        </div>
+      )}
 
       <main className="panel">
         {activeTab === 'Dashboard' && (
@@ -1084,7 +1156,7 @@ function App() {
             </div>
           </section>
         )}
-        {activeTab === 'Log Dive' && (
+        {activeTab === 'Log Dive' && !isViewOnly && (
           <section className="entry">
             <div className="entry-header">
               <div>
@@ -1122,6 +1194,15 @@ function App() {
                         rows={3}
                         value={formValues[field.name] ?? ''}
                         onChange={(event) => handleFieldChange(field.name, event.target.value)}
+                      />
+                    ) : field.type === 'date' ? (
+                      <input
+                        type="date"
+                        value={toISODateInputValue(formValues[field.name])}
+                        onChange={(event) =>
+                          handleFieldChange(field.name, formatDateDisplay(event.target.value))
+                        }
+                        readOnly={field.readOnly}
                       />
                     ) : field.type === 'select' ? (
                       <select
@@ -1176,19 +1257,17 @@ function App() {
               <label>
                 <span>Start date</span>
                 <input
-                  type="text"
-                  placeholder="DD/MM/YYYY"
-                  value={filterStart}
-                  onChange={(event) => setFilterStart(event.target.value)}
+                  type="date"
+                  value={toISODateInputValue(filterStart)}
+                  onChange={(event) => setFilterStart(formatDateDisplay(event.target.value))}
                 />
               </label>
               <label>
                 <span>End date</span>
                 <input
-                  type="text"
-                  placeholder="DD/MM/YYYY"
-                  value={filterEnd}
-                  onChange={(event) => setFilterEnd(event.target.value)}
+                  type="date"
+                  value={toISODateInputValue(filterEnd)}
+                  onChange={(event) => setFilterEnd(formatDateDisplay(event.target.value))}
                 />
               </label>
               <label>
@@ -1236,7 +1315,7 @@ function App() {
                         </button>
                       </th>
                     ))}
-                    <th>Actions</th>
+                    {!isViewOnly && <th>Actions</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -1247,18 +1326,20 @@ function App() {
                           {normalizeName(header) === 'date' ? formatDateDisplay(row[header]) : row[header] ?? ''}
                         </td>
                       ))}
-                      <td>
-                        <button type="button" className="table-action" onClick={() => beginEdit(row)}>
-                          Edit
-                        </button>
-                      </td>
+                      {!isViewOnly && (
+                        <td>
+                          <button type="button" className="table-action" onClick={() => beginEdit(row)}>
+                            Edit
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
 
-            {editRow && (
+            {!isViewOnly && editRow && (
               <section className="edit-form">
                 <div className="entry-header">
                   <div>
@@ -1281,6 +1362,15 @@ function App() {
                             rows={3}
                             value={editValues[field.name] ?? ''}
                             onChange={(event) => handleEditChange(field.name, event.target.value)}
+                          />
+                        ) : field.type === 'date' ? (
+                          <input
+                            type="date"
+                            value={toISODateInputValue(editValues[field.name])}
+                            onChange={(event) =>
+                              handleEditChange(field.name, formatDateDisplay(event.target.value))
+                            }
+                            readOnly={field.readOnly}
                           />
                         ) : field.type === 'select' ? (
                           <select
@@ -1337,15 +1427,17 @@ function App() {
                 <h2>Certifications</h2>
                 <p className="muted">All certifications sorted by newest date first.</p>
               </div>
-              <div className="form-actions">
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={() => setShowCertForm((prev) => !prev)}
-                >
-                  {showCertForm ? 'Close' : 'Add Certification'}
-                </button>
-              </div>
+              {!isViewOnly && (
+                <div className="form-actions">
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => setShowCertForm((prev) => !prev)}
+                  >
+                    {showCertForm ? 'Close' : 'Add Certification'}
+                  </button>
+                </div>
+              )}
             </div>
 
             {certStatus.state === 'error' && (
@@ -1376,18 +1468,23 @@ function App() {
               </table>
             </div>
 
-            {showCertForm && (
+            {!isViewOnly && showCertForm && (
               <form className="entry-form cert-form" onSubmit={handleCertificationSubmit}>
                 <div className="form-grid">
                   {certificationColumns.map((field) => (
                     <label className="form-field" key={field}>
                       <span>{field}</span>
                       <input
-                        type="text"
-                        placeholder={field === 'Date' ? 'DD/MM/YYYY' : undefined}
-                        value={certForm[field] ?? ''}
+                        type={field === 'Date' ? 'date' : 'text'}
+                        value={field === 'Date' ? toISODateInputValue(certForm[field]) : certForm[field] ?? ''}
                         onChange={(event) =>
-                          setCertForm((prev) => ({ ...prev, [field]: event.target.value }))
+                          setCertForm((prev) => ({
+                            ...prev,
+                            [field]:
+                              field === 'Date'
+                                ? formatDateDisplay(event.target.value)
+                                : event.target.value,
+                          }))
                         }
                       />
                     </label>

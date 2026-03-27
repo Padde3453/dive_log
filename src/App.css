@@ -91,6 +91,17 @@ h1 {
   gap: 12px;
 }
 
+.mode-banner {
+  margin-top: 14px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: linear-gradient(120deg, rgba(14, 165, 233, 0.18), rgba(30, 64, 175, 0.18));
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  color: #bae6fd;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
 .tab {
   border: none;
   background: rgba(30, 41, 59, 0.8);
@@ -462,6 +473,14 @@ h1 {
   background: transparent;
   color: #bae6fd;
   cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.view-only-link {
+  margin-top: 6px;
 }
 
 .toast {
